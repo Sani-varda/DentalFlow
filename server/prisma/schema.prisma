@@ -1,0 +1,272 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Clinic {
+  id               String            @id @default(uuid())
+  name             String
+  timezone         String            @default("UTC")
+  createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime          @updatedAt @map("updated_at")
+  appointments     Appointment[]
+  campaigns        Campaign[]
+  externalWebhooks ExternalWebhook[]
+  integrations     Integration[]
+  patients         Patient[]
+  templates        Template[]
+  users            User[]
+
+  @@map("clinics")
+}
+
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  passwordHash String     @map("password_hash")
+  name         String
+  role         UserRole   @default(STAFF)
+  clinicId     String?    @map("clinic_id")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  apiKey       String?    @unique @map("api_key")
+  auditLogs    AuditLog[]
+  appointments Appointment[]
+  clinic       Clinic?    @relation(fields: [clinicId], references: [id])
+
+  @@index([clinicId])
+  @@map("users")
+}
+
+model Patient {
+  id                      String         @id @default(uuid()) @map("patient_id")
+  name                    String
+  email                   String?
+  phone                   String?
+  preferredChannel        Channel        @default(SMS) @map("preferred_channel")
+  notificationPreferences Json           @default("{}") @map("notification_preferences")
+  consentStatus           Boolean        @default(true) @map("consent_status")
+  clinicId                String         @map("clinic_id")
+  createdAt               DateTime       @default(now()) @map("created_at")
+  updatedAt               DateTime       @updatedAt @map("updated_at")
+  appointments            Appointment[]
+  noShowPattern           NoShowPattern?
+  documents               Document[]
+  clinic                  Clinic         @relation(fields: [clinicId], references: [id])
+
+  @@index([clinicId])
+  @@map("patients")
+}
+
+model Appointment {
+  id                    String            @id @default(uuid()) @map("appt_id")
+  patientId             String            @map("patient_id")
+  clinicId              String            @map("clinic_id")
+  clinicianId           String?           @map("clinician_id")
+  scheduledTime         DateTime          @map("scheduled_time")
+  status                AppointmentStatus @default(SCHEDULED)
+  estimatedValue        Decimal           @default(150.00) @map("estimated_value") @db.Decimal(10, 2)
+  channelDeliveryStatus String?           @map("channel_delivery_status")
+  rescheduledFromApptId String?           @map("rescheduled_from_appt_id")
+  clinicianName         String?           @map("clinician_name")
+  notes                 String?
+  createdAt             DateTime          @default(now()) @map("created_at")
+  updatedAt             DateTime          @updatedAt @map("updated_at")
+  clinic                Clinic            @relation(fields: [clinicId], references: [id])
+  patient               Patient           @relation(fields: [patientId], references: [id])
+  clinician             User?             @relation(fields: [clinicianId], references: [id])
+  rescheduledFrom       Appointment?      @relation("RescheduleChain", fields: [rescheduledFromApptId], references: [id])
+  rescheduledTo         Appointment[]     @relation("RescheduleChain")
+  messages              ChannelMessage[]
+
+  @@index([clinicId])
+  @@index([patientId])
+  @@index([scheduledTime])
+  @@index([status])
+  @@map("appointments")
+}
+
+model ChannelMessage {
+  id                String        @id @default(uuid()) @map("msg_id")
+  appointmentId     String        @map("appt_id")
+  channel           Channel
+  sentAt            DateTime?     @map("sent_at")
+  status            MessageStatus @default(PENDING)
+  deliveryReport    Json?         @map("delivery_report")
+  contentTemplateId String?       @map("content_template_id")
+  externalId        String?       @map("external_id")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  appointment       Appointment   @relation(fields: [appointmentId], references: [id])
+  template          Template?     @relation(fields: [contentTemplateId], references: [id])
+
+  @@index([appointmentId])
+  @@index([status])
+  @@map("channel_messages")
+}
+
+model NoShowPattern {
+  id             String    @id @default(uuid())
+  patientId      String    @unique @map("patient_id")
+  patternScore   Float     @default(0) @map("pattern_score")
+  lastNoShowDate DateTime? @map("last_no_show_date")
+  chronicFlag    Boolean   @default(false) @map("chronic_flag")
+  riskLevel      RiskLevel @default(LOW) @map("risk_level")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  patient        Patient   @relation(fields: [patientId], references: [id])
+
+  @@map("no_show_patterns")
+}
+
+model Template {
+  id        String           @id @default(uuid()) @map("template_id")
+  clinicId  String           @map("clinic_id")
+  channel   Channel
+  subject   String?
+  body      String
+  variables Json             @default("[]")
+  isActive  Boolean          @default(true) @map("is_active")
+  createdAt DateTime         @default(now()) @map("created_at")
+  updatedAt DateTime         @updatedAt @map("updated_at")
+  messages  ChannelMessage[]
+  clinic    Clinic           @relation(fields: [clinicId], references: [id])
+
+  @@index([clinicId])
+  @@map("templates")
+}
+
+model Integration {
+  id          String          @id @default(uuid()) @map("integration_id")
+  clinicId    String          @map("clinic_id")
+  type        IntegrationType
+  name        String
+  credentials String          @map("credentials")
+  syncStatus  SyncStatus      @default(PAUSED) @map("sync_status")
+  lastSyncAt  DateTime?       @map("last_sync_at")
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+  clinic      Clinic          @relation(fields: [clinicId], references: [id])
+
+  @@index([clinicId])
+  @@map("integrations")
+}
+
+model Campaign {
+  id          String         @id @default(uuid()) @map("campaign_id")
+  clinicId    String         @map("clinic_id")
+  name        String
+  type        String
+  channel     Channel
+  content     String
+  status      CampaignStatus @default(DRAFT)
+  totalTarget Int            @default(0) @map("total_target")
+  sentCount   Int            @default(0) @map("sent_count")
+  failedCount Int            @default(0) @map("failed_count")
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+  clinic      Clinic         @relation(fields: [clinicId], references: [id])
+
+  @@index([clinicId])
+  @@map("campaigns")
+}
+
+model AuditLog {
+  id            String   @id @default(uuid()) @map("event_id")
+  userId        String?  @map("user_id")
+  action        String
+  resource      String?
+  resourceId    String?  @map("resource_id")
+  details       Json?
+  relatedApptId String?  @map("related_appt_id")
+  timestamp     DateTime @default(now())
+  user          User?    @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([timestamp])
+  @@map("audit_logs")
+}
+
+model ExternalWebhook {
+  id        String   @id @default(uuid())
+  clinicId  String   @map("clinic_id")
+  url       String
+  name      String
+  events    String[]
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  clinic    Clinic   @relation(fields: [clinicId], references: [id])
+
+  @@index([clinicId])
+  @@map("external_webhooks")
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  COMPLETED
+  NO_SHOW
+  CANCELLED
+  RESCHEDULED
+}
+
+enum Channel {
+  SMS
+  WHATSAPP
+  EMAIL
+}
+
+enum MessageStatus {
+  PENDING
+  SENT
+  DELIVERED
+  FAILED
+  BOUNCED
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum IntegrationType {
+  DMS
+  EMR
+}
+
+enum SyncStatus {
+  ACTIVE
+  PAUSED
+  ERROR
+}
+
+enum UserRole {
+  SUPERADMIN
+  ADMIN
+  CLINICIAN
+  STAFF
+}
+
+enum CampaignStatus {
+  DRAFT
+  SENDING
+  COMPLETED
+  FAILED
+}
+
+model Document {
+  id        String   @id @default(uuid())
+  patientId String   @map("patient_id")
+  name      String
+  fileUrl   String   @map("file_url")
+  fileType  String   @map("file_type")
+  fileSize  Int      @map("file_size")
+  createdAt DateTime @default(now()) @map("created_at")
+  patient   Patient  @relation(fields: [patientId], references: [id])
+
+  @@index([patientId])
+  @@map("documents")
+}

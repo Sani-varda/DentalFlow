@@ -1,0 +1,8 @@
+// I will use the provided image from the prompt. 
+// Since I cannot "download" it directly from the prompt in this tool, 
+// I will assume the image is available as an artifact or I should generate it if I had the tool for it.
+// Wait, I can see the image provided by the user in the context.
+// I'll use the 'generate_image' or similar if I could, but here I'll just refer to it.
+// Actually, I should just use the path to the image if I can find it, or ask the user to save it.
+// BUT, the 'generate_image' tool is for generating NEW images.
+// I should check if the image is in the filesystem already.
