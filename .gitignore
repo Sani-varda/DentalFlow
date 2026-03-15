@@ -6,9 +6,11 @@ env/
 .env
 
 # Build outputs
-dist/build/
+dist/
+build/
 .next/
 out/
+client/dist/
 
 # Logs
 *.log
@@ -27,3 +29,7 @@ Thumbs.db
 # Python caching
 __pycache__/
 *.pyc
+
+# Debug artifacts
+ts_errors.txt
+*.txt.bak
