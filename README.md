@@ -1,10 +1,10 @@
-# 🦷 DentaFlow: Modern Clinic Management & Intelligence Suite
+# DentaFlow: Modern Clinic Management & Intelligence Suite
 
 DentaFlow is a production-grade, full-stack application designed to modernize dental clinic operations. It combines intuitive patient management with an AI-driven intelligence layer to predict patient behavior and automate high-value interactions.
 
 ---
 
-## 🛠️ System Architecture
+## System Architecture
 
 DentaFlow operates on a **Distributed Service Architecture** to ensure scalability, reliability, and modularity:
 
@@ -15,31 +15,31 @@ DentaFlow operates on a **Distributed Service Architecture** to ensure scalabili
 
 ---
 
-## ✨ Key Features
+## Key Features
 
-### 📅 Appointment & Patient Flow
+### Appointment & Patient Flow
 - **Smart Scheduling**: Conflict-free booking with automated multi-channel notifications.
 - **Patient Profiles**: Comprehensive history, contactability status, and risk profiling.
 - **RBAC**: Secure access controls for Admins, Staff, and Practitioners.
 
-### 🤖 AI Intelligence Layer
+### AI Intelligence Layer
 - **No-Show Prediction**: Real-time scoring of patient reliability using behavioral pattern matching.
 - **Chronic Canceller Detection**: Flags high-risk patients to optimize clinic utilization.
 - **Automated Rescheduling**: Intelligent workflows for missed appointments.
 
-### 📢 Communication Engine
+### Communication Engine
 - **Multi-Channel**: Integrated SMS (Twilio), WhatsApp, and Email (SendGrid).
 - **Template System**: 15+ dynamic templates for reminders, post-op care, and marketing.
 - **Real-time Updates**: Live notification streams for clinic staff.
 
-### 🛡️ Compliance & Security
+### Compliance & Security
 - **Data Retention**: Automated 7-year retention policy for clinical records.
 - **Audit Logs**: Immutable tracking of all sensitive PHI/PII interactions.
 - **Privacy First**: Built-in masking for sensitive data in real-time streams.
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 - **Node.js** v20+
@@ -74,7 +74,7 @@ npm run dev
 
 ---
 
-## 🏗️ Tech Stack
+## Tech Stack
 
 - **Frontend**: React 19, Vite, Tailwind CSS, Framer Motion, Zustand
 - **Backend (Core)**: Node.js, Express, TypeScript, Prisma, BullMQ, Socket.io
