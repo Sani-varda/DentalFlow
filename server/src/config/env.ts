@@ -20,13 +20,13 @@ export const env = {
   GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || '',
 
   // Twilio
-  TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID || '',
-  TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN || '',
-  TWILIO_PHONE_NUMBER: process.env.TWILIO_PHONE_NUMBER || '',
+  TWILIO_ACCOUNT_SID:    process.env.TWILIO_ACCOUNT_SID    || '',
+  TWILIO_AUTH_TOKEN:     process.env.TWILIO_AUTH_TOKEN     || '',
+  TWILIO_PHONE_NUMBER:   process.env.TWILIO_PHONE_NUMBER   || '',
   TWILIO_WHATSAPP_NUMBER: process.env.TWILIO_WHATSAPP_NUMBER || '',
 
   // SendGrid
-  SENDGRID_API_KEY: process.env.SENDGRID_API_KEY || '',
+  SENDGRID_API_KEY:    process.env.SENDGRID_API_KEY    || '',
   SENDGRID_FROM_EMAIL: process.env.SENDGRID_FROM_EMAIL || '',
 
   // No-show scoring
@@ -34,4 +34,15 @@ export const env = {
 
   // Real-time / SSE
   MAX_SSE_CONNECTIONS_PER_USER: parseInt(process.env.MAX_SSE_CONNECTIONS_PER_USER || '5', 10),
+
+  // Stripe Billing
+  STRIPE_SECRET_KEY:      process.env.STRIPE_SECRET_KEY      || '',
+  STRIPE_WEBHOOK_SECRET:  process.env.STRIPE_WEBHOOK_SECRET  || '',
+  STRIPE_PRICE_STARTER:   process.env.STRIPE_PRICE_STARTER   || '',
+  STRIPE_PRICE_GROWTH:    process.env.STRIPE_PRICE_GROWTH    || '',
+  STRIPE_PRICE_ENTERPRISE: process.env.STRIPE_PRICE_ENTERPRISE || '',
+
+  // Google Review Collection
+  REVIEW_BASE_URL:          process.env.REVIEW_BASE_URL          || 'http://localhost:3000',
+  GOOGLE_PLACE_ID_FALLBACK: process.env.GOOGLE_PLACE_ID_FALLBACK || '',
 } as const;
