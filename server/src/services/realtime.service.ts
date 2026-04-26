@@ -1,5 +1,8 @@
 import { Response } from 'express';
 import { env } from '../config/env';
+import { logger } from '../lib/logger';
+
+const log = logger.child({ component: 'realtime' });
 
 interface SSEClient {
   id: string;
@@ -18,7 +21,7 @@ class RealtimeService {
     // Check per-user connection limit
     const userConnectionCount = this.clients.filter(c => c.userId === userId).length;
     if (userConnectionCount >= env.MAX_SSE_CONNECTIONS_PER_USER) {
-      console.warn(`[Realtime] Max connections (${env.MAX_SSE_CONNECTIONS_PER_USER}) reached for user ${userId}`);
+      log.warn({ userId, max: env.MAX_SSE_CONNECTIONS_PER_USER }, 'max sse connections reached');
       return null;
     }
 
@@ -76,11 +79,13 @@ class RealtimeService {
    * Heartbeat to keep connections alive
    */
   initHeartbeat() {
-    setInterval(() => {
+    const timer = setInterval(() => {
       this.clients.forEach(client => {
         client.res.write(': heartbeat\n\n');
       });
     }, 30000);
+    // Don't keep the event loop alive just for heartbeats (so tests/workers can exit cleanly).
+    timer.unref();
   }
 }
 

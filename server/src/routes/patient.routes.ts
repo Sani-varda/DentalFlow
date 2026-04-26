@@ -1,41 +1,90 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
 import prisma from '../config/db';
+import { Channel, Prisma } from '@prisma/client';
 
 const router = Router();
 
-// GET /api/v1/patients
-router.get('/', async (req: Request, res: Response) => {
-  try {
-    const { search, page = '1', limit = '20' } = req.query;
-    const skip = (Number(page) - 1) * Number(limit);
+const channelEnum = z.nativeEnum(Channel);
 
-    const where: any = { clinicId: req.user?.clinicId };
-    if (search) {
-      where.name = { contains: String(search), mode: 'insensitive' };
+const patientCreateSchema = z.object({
+  name: z.string().min(1).max(255),
+  email: z.string().email().max(320).optional().nullable(),
+  phone: z.string().min(3).max(32).regex(/^\+?[0-9 ()\-.]+$/, 'Invalid phone format').optional().nullable(),
+  preferredChannel: channelEnum.optional(),
+  notificationPreferences: z.record(z.unknown()).optional(),
+  consentStatus: z.boolean().optional(),
+});
+
+const patientUpdateSchema = patientCreateSchema.partial();
+
+const documentCreateSchema = z.object({
+  name: z.string().min(1).max(255),
+  fileUrl: z.string().url().max(2048),
+  fileType: z.string().min(1).max(64),
+  fileSize: z.coerce.number().int().nonnegative().max(50 * 1024 * 1024), // 50 MB cap
+});
+
+const bulkSchema = z.object({
+  patients: z.array(patientCreateSchema).min(1).max(1000),
+});
+
+const listQuerySchema = z.object({
+  search: z.string().max(255).optional(),
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(100).default(20),
+});
+
+function requireClinic(req: Request, res: Response): string | null {
+  const clinicId = req.user?.clinicId;
+  if (!clinicId) {
+    res.status(400).json({ error: 'User is not associated with a clinic' });
+    return null;
+  }
+  return clinicId;
+}
+
+// GET /api/v1/patients
+router.get('/', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const clinicId = requireClinic(req, res);
+    if (!clinicId) return;
+
+    const parsed = listQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
     }
+    const { search, page, limit } = parsed.data;
+    const skip = (page - 1) * limit;
+
+    const where: { clinicId: string; name?: { contains: string; mode: 'insensitive' } } = { clinicId };
+    if (search) where.name = { contains: search, mode: 'insensitive' };
 
     const [patients, total] = await Promise.all([
       prisma.patient.findMany({
         where,
         skip,
-        take: Number(limit),
+        take: limit,
         include: { noShowPattern: true },
         orderBy: { createdAt: 'desc' },
       }),
       prisma.patient.count({ where }),
     ]);
 
-    res.json({ data: patients, total, page: Number(page), limit: Number(limit) });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.json({ data: patients, total, page, limit });
+  } catch (err) {
+    next(err);
   }
 });
 
 // GET /api/v1/patients/:id
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const clinicId = requireClinic(req, res);
+    if (!clinicId) return;
     const patient = await prisma.patient.findFirst({
-      where: { id: String(req.params.id), clinicId: req.user?.clinicId },
+      where: { id: String(req.params.id), clinicId },
       include: {
         noShowPattern: true,
         documents: { orderBy: { createdAt: 'desc' } },
@@ -47,154 +96,177 @@ router.get('/:id', async (req: Request, res: Response) => {
       return;
     }
     res.json(patient);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    next(err);
   }
 });
 
 // POST /api/v1/patients
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, email, phone, preferredChannel, notificationPreferences, consentStatus } = req.body;
-    if (!name) {
-      res.status(400).json({ error: 'name is required' });
+    const clinicId = requireClinic(req, res);
+    if (!clinicId) return;
+
+    const parsed = patientCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const data = parsed.data;
+
+    // Channel ↔ contact info consistency check
+    if ((data.preferredChannel === 'SMS' || data.preferredChannel === 'WHATSAPP') && !data.phone) {
+      res.status(400).json({ error: 'Phone number required for SMS/WhatsApp channel' });
+      return;
+    }
+    if (data.preferredChannel === 'EMAIL' && !data.email) {
+      res.status(400).json({ error: 'Email required for EMAIL channel' });
       return;
     }
 
-    if (!req.user?.clinicId) {
-      res.status(400).json({ error: 'User is not associated with a clinic' });
-      return;
-    }
-
-    const patient = await prisma.patient.create({
-      data: {
-        name,
-        email,
-        phone,
-        preferredChannel: preferredChannel || 'SMS',
-        notificationPreferences: notificationPreferences || {},
-        consentStatus: consentStatus !== undefined ? consentStatus : true,
-        clinicId: req.user.clinicId,
-      },
-    });
-
-    // Initialize no-show pattern record
-    await prisma.noShowPattern.create({
-      data: { patientId: patient.id },
+    const patient = await prisma.$transaction(async (tx) => {
+      const created = await tx.patient.create({
+        data: {
+          name: data.name,
+          email: data.email ?? null,
+          phone: data.phone ?? null,
+          preferredChannel: data.preferredChannel ?? 'SMS',
+          notificationPreferences: (data.notificationPreferences ?? {}) as Prisma.InputJsonValue,
+          consentStatus: data.consentStatus ?? true,
+          clinicId,
+        },
+      });
+      await tx.noShowPattern.create({ data: { patientId: created.id } });
+      return created;
     });
 
     res.status(201).json(patient);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    next(err);
   }
 });
+
 // POST /api/v1/patients/bulk
-router.post('/bulk', async (req: Request, res: Response) => {
+router.post('/bulk', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { patients } = req.body;
-    if (!Array.isArray(patients)) {
-      res.status(400).json({ error: 'patients array is required' });
+    const clinicId = requireClinic(req, res);
+    if (!clinicId) return;
+
+    const parsed = bulkSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
       return;
     }
 
-    const clinicId = req.user?.clinicId;
-    if (!clinicId) {
-      res.status(400).json({ error: 'Clinic association required' });
-      return;
-    }
-
-    const created = [];
-    for (const p of patients) {
-      const patient = await prisma.patient.create({
-        data: {
-          name: p.name,
-          email: p.email,
-          phone: p.phone,
-          preferredChannel: p.preferredChannel || 'SMS',
-          clinicId,
-        }
-      });
-      await prisma.noShowPattern.create({ data: { patientId: patient.id } });
-      created.push(patient);
-    }
+    // Process in a transaction so partial imports don't leave inconsistent state.
+    const created = await prisma.$transaction(async (tx) => {
+      const out = [] as Array<{ id: string; name: string }>;
+      for (const p of parsed.data.patients) {
+        const patient = await tx.patient.create({
+          data: {
+            name: p.name,
+            email: p.email ?? null,
+            phone: p.phone ?? null,
+            preferredChannel: p.preferredChannel ?? 'SMS',
+            notificationPreferences: (p.notificationPreferences ?? {}) as Prisma.InputJsonValue,
+            consentStatus: p.consentStatus ?? true,
+            clinicId,
+          },
+          select: { id: true, name: true },
+        });
+        await tx.noShowPattern.create({ data: { patientId: patient.id } });
+        out.push(patient);
+      }
+      return out;
+    });
 
     res.status(201).json({ count: created.length, data: created });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    next(err);
   }
 });
 
 // POST /api/v1/patients/:id/documents
-router.post('/:id/documents', async (req: Request, res: Response) => {
+router.post('/:id/documents', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, fileUrl, fileType, fileSize } = req.body;
-    const patientId = req.params.id;
-
-    const patient = await prisma.patient.findFirst({
-      where: { id: patientId, clinicId: req.user?.clinicId }
-    });
-
+    const clinicId = requireClinic(req, res);
+    if (!clinicId) return;
+    const parsed = documentCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const patientId = String(req.params.id);
+    const patient = await prisma.patient.findFirst({ where: { id: patientId, clinicId } });
     if (!patient) {
       res.status(404).json({ error: 'Patient not found' });
       return;
     }
-
-    const doc = await prisma.document.create({
-      data: {
-        patientId,
-        name,
-        fileUrl,
-        fileType,
-        fileSize
-      }
-    });
-
+    const doc = await prisma.document.create({ data: { ...parsed.data, patientId } });
     res.status(201).json(doc);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    next(err);
   }
 });
 
 // PATCH /api/v1/patients/:id
-router.patch('/:id', async (req: Request, res: Response) => {
+router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    // First verify ownership
+    const clinicId = requireClinic(req, res);
+    if (!clinicId) return;
+    const parsed = patientUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
     const existing = await prisma.patient.findFirst({
-      where: { id: String(req.params.id), clinicId: req.user?.clinicId }
+      where: { id: String(req.params.id), clinicId },
     });
     if (!existing) {
       res.status(404).json({ error: 'Patient not found or unauthorized' });
       return;
+    }
+
+    const updateData: Prisma.PatientUpdateInput = {};
+    if (parsed.data.name !== undefined) updateData.name = parsed.data.name;
+    if (parsed.data.email !== undefined) updateData.email = parsed.data.email;
+    if (parsed.data.phone !== undefined) updateData.phone = parsed.data.phone;
+    if (parsed.data.preferredChannel !== undefined) updateData.preferredChannel = parsed.data.preferredChannel;
+    if (parsed.data.consentStatus !== undefined) updateData.consentStatus = parsed.data.consentStatus;
+    if (parsed.data.notificationPreferences !== undefined) {
+      updateData.notificationPreferences = parsed.data.notificationPreferences as Prisma.InputJsonValue;
     }
 
     const patient = await prisma.patient.update({
-      where: { id: String(req.params.id) },
-      data: req.body,
+      where: { id: existing.id },
+      data: updateData,
     });
     res.json(patient);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    next(err);
   }
 });
 
-// DELETE /api/v1/patients/:id (soft conceptual — keeps record but marks consent false)
-router.delete('/:id', async (req: Request, res: Response) => {
+// DELETE /api/v1/patients/:id (soft — withdraws consent)
+router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const clinicId = requireClinic(req, res);
+    if (!clinicId) return;
     const existing = await prisma.patient.findFirst({
-      where: { id: String(req.params.id), clinicId: req.user?.clinicId }
+      where: { id: String(req.params.id), clinicId },
     });
     if (!existing) {
       res.status(404).json({ error: 'Patient not found or unauthorized' });
       return;
     }
-
     await prisma.patient.update({
-      where: { id: String(req.params.id) },
+      where: { id: existing.id },
       data: { consentStatus: false },
     });
     res.json({ message: 'Patient consent withdrawn (soft delete)' });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    next(err);
   }
 });
 

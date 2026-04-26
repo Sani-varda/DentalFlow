@@ -2,27 +2,28 @@ import prisma from '../config/db';
 import { dispatch } from './messaging/dispatcher';
 import { realtimeService } from './realtime.service';
 import { dispatchWebhookEvent } from './webhook.dispatcher';
-// Channel type: SMS | WHATSAPP | EMAIL
+import { Channel } from '@prisma/client';
+import { HttpError } from '../middleware/errorHandler';
 
 /**
  * Schedule (and immediately attempt) a reminder for an appointment.
  */
 export async function scheduleReminder(
   appointmentId: string,
-  channelOverride?: string,
-  templateId?: string
+  channelOverride?: Channel,
+  templateId?: string,
 ) {
   const appointment = await prisma.appointment.findUnique({
     where: { id: appointmentId },
     include: { patient: true },
   });
 
-  if (!appointment) throw new Error('Appointment not found');
+  if (!appointment) throw new HttpError(404, 'Appointment not found');
   if (!appointment.patient.consentStatus) {
-    throw new Error('Patient has not consented to notifications');
+    throw new HttpError(403, 'Patient has not consented to notifications');
   }
 
-  const channel = (channelOverride || appointment.patient.preferredChannel) as 'SMS' | 'WHATSAPP' | 'EMAIL';
+  const channel: Channel = channelOverride ?? appointment.patient.preferredChannel;
 
   // Resolve template
   let subject = 'Appointment Reminder';
@@ -46,7 +47,7 @@ export async function scheduleReminder(
     : appointment.patient.phone;
 
   if (!to) {
-    throw new Error(`No ${channel.toLowerCase()} contact info for patient`);
+    throw new HttpError(422, `No ${channel.toLowerCase()} contact info for patient`);
   }
 
   // Create ChannelMessage record
@@ -67,7 +68,7 @@ export async function scheduleReminder(
     channel,
   });
 
-  dispatchWebhookEvent(appointment.clinicId, 'MESSAGE_DISPATCHED', {
+  void dispatchWebhookEvent(appointment.clinicId, 'MESSAGE_DISPATCHED', {
     messageId: msg.id,
     appointmentId,
     patientName: appointment.patient.name,
@@ -93,7 +94,7 @@ export async function scheduleReminder(
     timestamp: new Date(),
   });
 
-  dispatchWebhookEvent(appointment.clinicId, 'MESSAGE_STATUS_UPDATED', {
+  void dispatchWebhookEvent(appointment.clinicId, 'MESSAGE_STATUS_UPDATED', {
     messageId: msg.id,
     status: result.success ? 'SENT' : 'FAILED',
     channel,

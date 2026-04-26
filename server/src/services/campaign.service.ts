@@ -2,97 +2,126 @@ import prisma from '../config/db';
 import { Channel, CampaignStatus } from '@prisma/client';
 import { dispatch } from './messaging/dispatcher';
 import { realtimeService } from './realtime.service';
+import { logger } from '../lib/logger';
+
+const log = logger.child({ component: 'campaign.service' });
+
+const DEFAULT_CONCURRENCY = 5;
+const PROGRESS_INTERVAL = 25;
+
+async function runWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const idx = cursor++;
+      if (idx >= items.length) return;
+      results[idx] = await worker(items[idx], idx);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
 
 export class CampaignService {
-  /**
-   * Triggers a bulk campaign for a specific clinic.
-   * In a real production app, this would be an async background job (BullMQ).
-   * For this implementation, we run it in the background as a promise loop with real-time feedback.
-   */
   async triggerCampaign(
-    clinicId: string, 
+    clinicId: string,
     campaignId: string,
     name: string,
-    type: string,
+    _type: string,
     channel: Channel,
-    content: string
-  ) {
-    // 1. Fetch audience
+    content: string,
+  ): Promise<void> {
     const patients = await prisma.patient.findMany({
-      where: { clinicId, consentStatus: true }
+      where: { clinicId, consentStatus: true },
+      select: { id: true, email: true, phone: true },
     });
 
     if (patients.length === 0) {
       await prisma.campaign.update({
         where: { id: campaignId },
-        data: { status: 'COMPLETED', totalTarget: 0 }
+        data: { status: 'COMPLETED', totalTarget: 0 },
       });
       return;
     }
 
-    // 2. Initialize campaign status
     await prisma.campaign.update({
       where: { id: campaignId },
-      data: { status: 'SENDING', totalTarget: patients.length }
+      data: { status: 'SENDING', totalTarget: patients.length },
     });
 
-    // Notify frontend about campaign start
     realtimeService.sendToClinic(clinicId, 'CAMPAIGN_PROGRESS', {
       campaignId,
       status: 'SENDING',
       sentCount: 0,
-      totalTarget: patients.length
+      totalTarget: patients.length,
     });
 
-    // 3. Dispatch loop (simulating background processing)
     let sentCount = 0;
     let failedCount = 0;
+    let lastReported = 0;
 
-    // Process in chunks to avoid blocking/rate limits
-    for (const patient of patients) {
+    const persistProgress = async (final: boolean) => {
       try {
-        if (!patient.phone && (channel === 'SMS' || channel === 'WHATSAPP')) {
-          throw new Error('No phone number');
-        }
-
-        const to = channel === 'EMAIL' ? (patient.email || '') : (patient.phone || '');
-        
-        await dispatch(channel, to, `DentalFlow: ${name}`, content);
-        sentCount++;
-      } catch (err: any) {
-        console.error(`[Campaign] Failed to send to patient ${patient.id}:`, err.message);
-        failedCount++;
-      }
-
-      // Periodically update DB and Broadcast Progress
-      if ((sentCount + failedCount) % 5 === 0 || (sentCount + failedCount) === patients.length) {
         await prisma.campaign.update({
           where: { id: campaignId },
-          data: { sentCount, failedCount }
+          data: { sentCount, failedCount },
         });
-
-        realtimeService.sendToClinic(clinicId, 'CAMPAIGN_PROGRESS', {
-          campaignId,
-          status: 'SENDING',
-          sentCount,
-          totalTarget: patients.length
-        });
+      } catch (err) {
+        log.warn({ err: (err as Error).message, campaignId }, 'progress write failed');
       }
-    }
+      realtimeService.sendToClinic(clinicId, 'CAMPAIGN_PROGRESS', {
+        campaignId,
+        status: final ? 'SENDING' : 'SENDING',
+        sentCount,
+        totalTarget: patients.length,
+      });
+      lastReported = sentCount + failedCount;
+    };
 
-    // 4. Finalize
-    const finalStatus = failedCount === patients.length ? 'FAILED' : 'COMPLETED';
+    await runWithConcurrency(patients, DEFAULT_CONCURRENCY, async (patient) => {
+      try {
+        const recipient = channel === 'EMAIL' ? patient.email ?? '' : patient.phone ?? '';
+        if (!recipient) {
+          failedCount++;
+          return;
+        }
+        const result = await dispatch(channel, recipient, `DentalFlow: ${name}`, content);
+        if (result.success) sentCount++;
+        else failedCount++;
+      } catch (err) {
+        log.warn({ err: (err as Error).message, patientId: patient.id }, 'campaign dispatch error');
+        failedCount++;
+      }
+      const processed = sentCount + failedCount;
+      if (processed - lastReported >= PROGRESS_INTERVAL || processed === patients.length) {
+        await persistProgress(false);
+      }
+    });
+
+    let finalStatus: CampaignStatus = 'COMPLETED';
+    if (failedCount === patients.length) finalStatus = 'FAILED';
+
     await prisma.campaign.update({
       where: { id: campaignId },
-      data: { status: finalStatus as CampaignStatus }
+      data: { status: finalStatus, sentCount, failedCount },
     });
 
     realtimeService.sendToClinic(clinicId, 'CAMPAIGN_PROGRESS', {
       campaignId,
       status: finalStatus,
       sentCount,
-      totalTarget: patients.length
+      totalTarget: patients.length,
     });
+
+    log.info(
+      { campaignId, clinicId, sentCount, failedCount, total: patients.length, finalStatus },
+      'campaign complete',
+    );
   }
 }
 

@@ -1,10 +1,13 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { OAuth2Client } from 'google-auth-library';
 import { z } from 'zod';
 import prisma from '../config/db';
 import { env } from '../config/env';
+import { logger } from '../lib/logger';
+
+const log = logger.child({ component: 'auth.routes' });
 
 const router = Router();
 const googleClient = new OAuth2Client(env.GOOGLE_CLIENT_ID);
@@ -26,7 +29,7 @@ const loginSchema = z.object({
 });
 
 // POST /api/v1/auth/register
-router.post('/register', async (req: Request, res: Response) => {
+router.post('/register', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const parsed = registerSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -63,13 +66,13 @@ router.post('/register', async (req: Request, res: Response) => {
     );
 
     res.status(201).json({ token, user });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    next(err);
   }
 });
 
 // POST /api/v1/auth/login
-router.post('/login', async (req: Request, res: Response) => {
+router.post('/login', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -101,8 +104,8 @@ router.post('/login', async (req: Request, res: Response) => {
       token,
       user: { id: user.id, email: user.email, name: user.name, role: user.role, clinicId: user.clinicId },
     });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    next(err);
   }
 });
 
@@ -165,9 +168,9 @@ router.post('/google', async (req: Request, res: Response) => {
       token: appToken,
       user: { id: user.id, email: user.email, name: user.name, role: user.role, clinicId: user.clinicId },
     });
-  } catch (err: any) {
-    console.error('Google Auth Error:', err.message);
-    res.status(500).json({ error: 'Google authentication failed' });
+  } catch (err) {
+    log.warn({ err: (err as Error).message }, 'google auth failed');
+    res.status(401).json({ error: 'Google authentication failed' });
   }
 });
 

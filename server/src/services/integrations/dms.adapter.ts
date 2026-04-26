@@ -5,6 +5,10 @@
  * HL7/FHIR API, database connector, or REST API.
  */
 
+import { logger } from '../../lib/logger';
+
+const log = logger.child({ component: 'dms.adapter' });
+
 export interface DmsPatient {
   externalId: string;
   name: string;
@@ -29,7 +33,7 @@ export class DmsAdapter {
 
   async fetchPatients(): Promise<DmsPatient[]> {
     // Stub: Return mock data
-    console.log(`[DMS:${this.integrationId}] Fetching patients (stub)`);
+    log.debug({ integrationId: this.integrationId }, 'fetching patients (stub)');
     return [
       { externalId: 'DMS-P001', name: 'John Doe', phone: '+11234567890', email: 'john@example.com' },
       { externalId: 'DMS-P002', name: 'Jane Smith', phone: '+10987654321', email: 'jane@example.com' },
@@ -38,7 +42,10 @@ export class DmsAdapter {
 
   async fetchAppointments(fromDate: Date, toDate: Date): Promise<DmsAppointment[]> {
     // Stub: Return mock data
-    console.log(`[DMS:${this.integrationId}] Fetching appointments ${fromDate.toISOString()} to ${toDate.toISOString()} (stub)`);
+    log.debug(
+      { integrationId: this.integrationId, from: fromDate.toISOString(), to: toDate.toISOString() },
+      'fetching appointments (stub)',
+    );
     return [
       {
         externalId: 'DMS-A001',
@@ -52,7 +59,7 @@ export class DmsAdapter {
 
   async syncAvailability(): Promise<{ slots: Date[] }> {
     // Stub: Return available slots
-    console.log(`[DMS:${this.integrationId}] Fetching availability (stub)`);
+    log.debug({ integrationId: this.integrationId }, 'fetching availability (stub)');
     const slots: Date[] = [];
     const now = new Date();
     for (let d = 1; d <= 7; d++) {

@@ -1,46 +1,83 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
 import prisma from '../config/db';
 import { scheduleReminder } from '../services/reminder.service';
+import { Channel, MessageStatus } from '@prisma/client';
 
 const router = Router();
 
-// GET /api/v1/reminders — list channel messages (reminders)
-router.get('/', async (req: Request, res: Response) => {
+const listSchema = z.object({
+  appointmentId: z.string().min(1).max(64).optional(),
+  status: z.nativeEnum(MessageStatus).optional(),
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(100).default(20),
+});
+
+const createSchema = z.object({
+  appointmentId: z.string().min(1).max(64),
+  channel: z.nativeEnum(Channel).optional(),
+  templateId: z.string().min(1).max(64).optional(),
+});
+
+router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { appointmentId, status, page = '1', limit = '20' } = req.query;
-    const skip = (Number(page) - 1) * Number(limit);
-    const where: any = { appointment: { clinicId: req.user?.clinicId } };
-    if (appointmentId) where.appointmentId = String(appointmentId);
-    if (status) where.status = String(status);
+    const clinicId = req.user?.clinicId;
+    if (!clinicId) {
+      res.status(400).json({ error: 'Clinic association required' });
+      return;
+    }
+    const parsed = listSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const { appointmentId, status, page, limit } = parsed.data;
+    const skip = (page - 1) * limit;
+    const where: {
+      appointment: { clinicId: string };
+      appointmentId?: string;
+      status?: MessageStatus;
+    } = { appointment: { clinicId } };
+    if (appointmentId) where.appointmentId = appointmentId;
+    if (status) where.status = status;
 
     const [messages, total] = await Promise.all([
       prisma.channelMessage.findMany({
         where,
         skip,
-        take: Number(limit),
-        include: { appointment: { select: { id: true, scheduledTime: true, patient: { select: { name: true } } } } },
+        take: limit,
+        include: {
+          appointment: {
+            select: { id: true, scheduledTime: true, patient: { select: { name: true } } },
+          },
+        },
         orderBy: { createdAt: 'desc' },
       }),
       prisma.channelMessage.count({ where }),
     ]);
 
-    res.json({ data: messages, total, page: Number(page), limit: Number(limit) });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.json({ data: messages, total, page, limit });
+  } catch (err) {
+    next(err);
   }
 });
 
-// POST /api/v1/reminders — manually trigger a reminder for an appointment
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { appointmentId, channel, templateId } = req.body;
-    if (!appointmentId) {
-      res.status(400).json({ error: 'appointmentId is required' });
+    const clinicId = req.user?.clinicId;
+    if (!clinicId) {
+      res.status(400).json({ error: 'Clinic association required' });
       return;
     }
+    const parsed = createSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const { appointmentId, channel, templateId } = parsed.data;
 
     const appt = await prisma.appointment.findFirst({
-      where: { id: String(appointmentId), clinicId: req.user?.clinicId }
+      where: { id: appointmentId, clinicId },
     });
     if (!appt) {
       res.status(404).json({ error: 'Appointment not found or unauthorized' });
@@ -49,24 +86,28 @@ router.post('/', async (req: Request, res: Response) => {
 
     const result = await scheduleReminder(appointmentId, channel, templateId);
     res.status(201).json(result);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    next(err);
   }
 });
 
-// GET /api/v1/reminders/:id/status
-router.get('/:id/status', async (req: Request, res: Response) => {
+router.get('/:id/status', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const msg = await prisma.channelMessage.findFirst({ 
-      where: { id: String(req.params.id), appointment: { clinicId: req.user?.clinicId } } 
+    const clinicId = req.user?.clinicId;
+    if (!clinicId) {
+      res.status(400).json({ error: 'Clinic association required' });
+      return;
+    }
+    const msg = await prisma.channelMessage.findFirst({
+      where: { id: String(req.params.id), appointment: { clinicId } },
     });
     if (!msg) {
       res.status(404).json({ error: 'Message not found' });
       return;
     }
     res.json({ id: msg.id, status: msg.status, deliveryReport: msg.deliveryReport });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    next(err);
   }
 });
 

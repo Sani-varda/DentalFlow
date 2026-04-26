@@ -1,16 +1,29 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
 import prisma from '../config/db';
 
 const router = Router();
 
-// GET /api/v1/analytics/overview
-router.get('/overview', async (req: Request, res: Response) => {
-  try {
-    const { range = '30' } = req.query;
-    const daysAgo = new Date();
-    daysAgo.setDate(daysAgo.getDate() - Number(range));
+const overviewSchema = z.object({
+  range: z.coerce.number().int().min(1).max(365).default(30),
+});
 
+// GET /api/v1/analytics/overview
+router.get('/overview', async (req: Request, res: Response, next: NextFunction) => {
+  try {
     const clinicId = req.user?.clinicId;
+    if (!clinicId) {
+      res.status(400).json({ error: 'Clinic association required' });
+      return;
+    }
+    const parsed = overviewSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const { range } = parsed.data;
+    const daysAgo = new Date();
+    daysAgo.setDate(daysAgo.getDate() - range);
 
     // Basic Stats
     const totalAppointments = await prisma.appointment.count({
@@ -124,8 +137,8 @@ router.get('/overview', async (req: Request, res: Response) => {
         sent: c.sentCount
       }))
     });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    next(err);
   }
 });
 

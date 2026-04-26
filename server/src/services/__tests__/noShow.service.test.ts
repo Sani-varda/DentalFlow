@@ -1,79 +1,58 @@
-import { recalculateAllPatternScores } from '../noShow.service';
-import prisma from '../../config/db';
-import { mockDeep, mockReset } from 'jest-mock-extended';
+import { recalculateAllPatternScores, recalculatePatientScore } from '../noShow.service';
 
-jest.mock('../../config/db', () => {
-  const { mockDeep } = require('jest-mock-extended');
-  return {
-    __esModule: true,
-    default: mockDeep(),
-  };
-});
+// Mock the HTTP wrapper so we don't hit a real scoring service.
+jest.mock('../../lib/http', () => ({
+  __esModule: true,
+  request: jest.fn(),
+}));
 
-const prismaMock = prisma as any;
+import { request } from '../../lib/http';
 
-describe('NoShowService', () => {
+const mockRequest = request as jest.MockedFunction<typeof request>;
+
+describe('noShow.service', () => {
   beforeEach(() => {
-    mockReset(prismaMock);
+    mockRequest.mockReset();
   });
 
-  it('should skip recalculation if patient has no appointments', async () => {
-    prismaMock.patient.findMany.mockResolvedValue([{ id: 'p1' }] as any);
-    prismaMock.appointment.count.mockResolvedValue(0);
+  describe('recalculateAllPatternScores', () => {
+    it('returns updated_count when scoring service responds with success', async () => {
+      mockRequest.mockResolvedValue({
+        data: { status: 'success', updated_count: 42, message: 'ok' },
+      } as any);
 
-    const updated = await recalculateAllPatternScores();
-    expect(updated).toBe(0);
-    expect(prismaMock.noShowPattern.upsert).not.toHaveBeenCalled();
+      const updated = await recalculateAllPatternScores();
+      expect(updated).toBe(42);
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns 0 when scoring service returns non-success status', async () => {
+      mockRequest.mockResolvedValue({
+        data: { status: 'error', detail: 'boom' },
+      } as any);
+
+      const updated = await recalculateAllPatternScores();
+      expect(updated).toBe(0);
+    });
+
+    it('returns 0 when scoring service is unreachable (does not throw)', async () => {
+      mockRequest.mockRejectedValue(new Error('ECONNREFUSED'));
+      const updated = await recalculateAllPatternScores();
+      expect(updated).toBe(0);
+    });
   });
 
-  it('should correctly calculate HIGH risk for a chronic no-shower', async () => {
-    const patientId = 'p1';
-    const now = new Date();
-    
-    // 3 no-shows yesterday
-    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    
-    prismaMock.patient.findMany.mockResolvedValue([{ id: patientId }] as any);
-    prismaMock.appointment.findMany.mockResolvedValue([
-      { scheduledTime: yesterday },
-      { scheduledTime: yesterday },
-      { scheduledTime: yesterday },
-    ] as any);
-    prismaMock.appointment.count.mockResolvedValue(3);
+  describe('recalculatePatientScore', () => {
+    it('returns the response body on success', async () => {
+      mockRequest.mockResolvedValue({ data: { riskLevel: 'HIGH' } } as any);
+      const result = await recalculatePatientScore('p1');
+      expect(result).toEqual({ riskLevel: 'HIGH' });
+    });
 
-    const updated = await recalculateAllPatternScores();
-    
-    expect(updated).toBe(1);
-    expect(prismaMock.noShowPattern.upsert).toHaveBeenCalledWith(expect.objectContaining({
-      where: { patientId },
-      create: expect.objectContaining({
-        riskLevel: 'HIGH',
-        chronicFlag: true
-      })
-    }));
-  });
-
-  it('should classify as LOW risk for few/old no-shows', async () => {
-    const patientId = 'p2';
-    const now = new Date();
-    
-    // 1 no-show 60 days ago
-    const oldDate = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
-    
-    prismaMock.patient.findMany.mockResolvedValue([{ id: patientId }] as any);
-    prismaMock.appointment.findMany.mockResolvedValue([
-      { scheduledTime: oldDate }
-    ] as any);
-    prismaMock.appointment.count.mockResolvedValue(10);
-
-    const updated = await recalculateAllPatternScores();
-    
-    expect(updated).toBe(1);
-    expect(prismaMock.noShowPattern.upsert).toHaveBeenCalledWith(expect.objectContaining({
-      create: expect.objectContaining({
-        riskLevel: 'LOW',
-        chronicFlag: false
-      })
-    }));
+    it('returns null on error', async () => {
+      mockRequest.mockRejectedValue(new Error('timeout'));
+      const result = await recalculatePatientScore('p1');
+      expect(result).toBeNull();
+    });
   });
 });

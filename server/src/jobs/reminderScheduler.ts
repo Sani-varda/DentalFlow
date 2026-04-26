@@ -2,22 +2,24 @@ import { Queue, Worker } from 'bullmq';
 import { redisConnection } from '../config/redis';
 import prisma from '../config/db';
 import { scheduleReminder } from '../services/reminder.service';
+import { logger } from '../lib/logger';
 
-// ─── Reminder Queue ───
+const log = logger.child({ component: 'reminderScheduler' });
+
 export const reminderQueue = new Queue('reminders', { connection: redisConnection });
 
-// ─── Producer: Schedule reminders for upcoming appointments ───
-export async function enqueueUpcomingReminders() {
-  const now = new Date();
-  const windows = [
-    { label: '48h', hoursAhead: 48 },
-    { label: '24h', hoursAhead: 24 },
-    { label: '2h', hoursAhead: 2 },
-  ];
+const REMINDER_WINDOWS = [
+  { label: '48h', hoursAhead: 48 },
+  { label: '24h', hoursAhead: 24 },
+  { label: '2h', hoursAhead: 2 },
+];
 
-  for (const w of windows) {
+export async function enqueueUpcomingReminders(): Promise<void> {
+  const now = new Date();
+
+  for (const w of REMINDER_WINDOWS) {
     const targetTime = new Date(now.getTime() + w.hoursAhead * 60 * 60 * 1000);
-    const windowStart = new Date(targetTime.getTime() - 15 * 60 * 1000); // 15 min buffer
+    const windowStart = new Date(targetTime.getTime() - 15 * 60 * 1000);
     const windowEnd = new Date(targetTime.getTime() + 15 * 60 * 1000);
 
     const appointments = await prisma.appointment.findMany({
@@ -29,7 +31,6 @@ export async function enqueueUpcomingReminders() {
     });
 
     for (const appt of appointments) {
-      // Check if reminder already sent for this window
       const existing = await prisma.channelMessage.count({
         where: {
           appointmentId: appt.id,
@@ -38,34 +39,37 @@ export async function enqueueUpcomingReminders() {
       });
 
       if (existing === 0 && appt.patient.consentStatus) {
-        await reminderQueue.add(`reminder-${w.label}-${appt.id}`, {
-          appointmentId: appt.id,
-          window: w.label,
-        }, {
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 5000 },
-        });
+        await reminderQueue.add(
+          `reminder-${w.label}-${appt.id}`,
+          { appointmentId: appt.id, window: w.label },
+          {
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 5000 },
+            removeOnComplete: { age: 86_400, count: 1000 },
+            removeOnFail: { age: 7 * 86_400, count: 1000 },
+          },
+        );
       }
     }
   }
 
-  console.log(`[ReminderScheduler] Enqueued reminders at ${now.toISOString()}`);
+  log.info({ at: now.toISOString() }, 'reminder enqueue cycle complete');
 }
 
-// ─── Worker: Process reminder jobs ───
-export const reminderWorker = new Worker('reminders', async (job) => {
-  const { appointmentId } = job.data;
-  console.log(`[ReminderWorker] Processing reminder for appointment ${appointmentId}`);
-  await scheduleReminder(appointmentId);
-}, {
-  connection: redisConnection,
-  concurrency: 5,
-});
+export const reminderWorker = new Worker(
+  'reminders',
+  async (job) => {
+    const { appointmentId } = job.data;
+    log.debug({ appointmentId, jobId: job.id }, 'processing reminder');
+    await scheduleReminder(appointmentId);
+  },
+  { connection: redisConnection, concurrency: 5 },
+);
 
 reminderWorker.on('completed', (job) => {
-  console.log(`[ReminderWorker] Completed: ${job.id}`);
+  log.debug({ jobId: job.id }, 'reminder completed');
 });
 
 reminderWorker.on('failed', (job, err) => {
-  console.error(`[ReminderWorker] Failed: ${job?.id}`, err.message);
+  log.error({ jobId: job?.id, err: err.message }, 'reminder job failed');
 });

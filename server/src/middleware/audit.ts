@@ -1,24 +1,26 @@
 import { Request, Response, NextFunction } from 'express';
 import prisma from '../config/db';
+import { logger } from '../lib/logger';
+
+const log = logger.child({ component: 'audit' });
 
 export function auditMiddleware(req: Request, res: Response, next: NextFunction): void {
-  // Only log mutating requests
-  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
-    const originalEnd = res.end;
-    const chunks: Buffer[] = [];
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    next();
+    return;
+  }
 
-    // Capture when response finishes, then log
-    res.end = function (this: Response, ...args: any[]) {
-      // Fire-and-forget audit log write
-      const userId = req.user?.userId || null;
-      const action = `${req.method} ${req.originalUrl}`;
-      const resource = req.originalUrl.split('/')[3] || null; // e.g. "patients"
-      const resourceId = req.params?.id ? String(req.params.id) : null;
-      const relatedApptId = (req.body?.appt_id || req.params?.appointmentId) 
-        ? String(req.body?.appt_id || req.params?.appointmentId) 
-        : null;
+  res.on('finish', () => {
+    const userId = req.user?.userId ?? null;
+    const action = `${req.method} ${req.originalUrl.split('?')[0]}`;
+    const pathParts = req.originalUrl.split('/');
+    const resource = pathParts[3] ?? null;
+    const resourceId = req.params?.id ? String(req.params.id) : null;
+    const apptIdRaw = (req.body && (req.body.appt_id || req.body.appointmentId)) || req.params?.appointmentId;
+    const relatedApptId = apptIdRaw ? String(apptIdRaw) : null;
 
-      prisma.auditLog.create({
+    void prisma.auditLog
+      .create({
         data: {
           userId,
           action,
@@ -27,17 +29,20 @@ export function auditMiddleware(req: Request, res: Response, next: NextFunction)
           relatedApptId,
           details: {
             statusCode: res.statusCode,
-            ip: req.ip || '',
-            userAgent: (req.headers['user-agent'] as string) || '',
+            ip: req.ip ?? '',
+            userAgent: (req.headers['user-agent'] as string) ?? '',
+            requestId: (req as Request & { id?: string }).id ?? null,
           },
         },
-      }).catch((err: Error) => {
-        console.error('[AuditLog] Failed to write:', err.message);
+      })
+      .catch((err: Error) => {
+        // Surface to structured logging; downstream alerting picks it up.
+        log.error(
+          { err: err.message, action, resource, resourceId, userId },
+          'audit log write failed',
+        );
       });
-
-      return originalEnd.apply(this, args as any);
-    } as any;
-  }
+  });
 
   next();
 }

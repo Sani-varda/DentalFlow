@@ -1,56 +1,82 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
 import prisma from '../config/db';
 import { requireRole } from '../middleware/auth';
 import { recalculateAllPatternScores } from '../services/noShow.service';
+import { RiskLevel } from '@prisma/client';
 
 const router = Router();
 
-// POST /api/v1/no-show-rules/recalculate — manually trigger scoring (Admin only)
-router.post('/recalculate', requireRole('ADMIN'), async (req: Request, res: Response) => {
-  try {
-    const count = await recalculateAllPatternScores();
-    res.json({ message: 'Recalculation complete', updated_count: count });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+const listSchema = z.object({
+  riskLevel: z.nativeEnum(RiskLevel).optional(),
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(100).default(20),
 });
 
-// GET /api/v1/no-show-rules — all patterns
-router.get('/', async (req: Request, res: Response) => {
+router.post(
+  '/recalculate',
+  requireRole('ADMIN', 'SUPERADMIN'),
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const count = await recalculateAllPatternScores();
+      res.json({ message: 'Recalculation complete', updated_count: count });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { riskLevel, page = '1', limit = '20' } = req.query;
-    const skip = (Number(page) - 1) * Number(limit);
-    const where: any = { patient: { clinicId: req.user?.clinicId } };
-    if (riskLevel) where.riskLevel = String(riskLevel);
+    const clinicId = req.user?.clinicId;
+    if (!clinicId) {
+      res.status(400).json({ error: 'Clinic association required' });
+      return;
+    }
+    const parsed = listSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const { riskLevel, page, limit } = parsed.data;
+    const skip = (page - 1) * limit;
+    const where: { patient: { clinicId: string }; riskLevel?: RiskLevel } = {
+      patient: { clinicId },
+    };
+    if (riskLevel) where.riskLevel = riskLevel;
 
     const [patterns, total] = await Promise.all([
       prisma.noShowPattern.findMany({
         where,
         skip,
-        take: Number(limit),
+        take: limit,
         include: { patient: { select: { id: true, name: true, phone: true, email: true } } },
         orderBy: { patternScore: 'desc' },
       }),
       prisma.noShowPattern.count({ where }),
     ]);
 
-    res.json({ data: patterns, total, page: Number(page), limit: Number(limit) });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.json({ data: patterns, total, page, limit });
+  } catch (err) {
+    next(err);
   }
 });
 
-// GET /api/v1/no-show-rules/chronic — chronic cancellers only
-router.get('/chronic', async (req: Request, res: Response) => {
+router.get('/chronic', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const clinicId = req.user?.clinicId;
+    if (!clinicId) {
+      res.status(400).json({ error: 'Clinic association required' });
+      return;
+    }
     const chronic = await prisma.noShowPattern.findMany({
-      where: { chronicFlag: true, patient: { clinicId: req.user?.clinicId } },
+      where: { chronicFlag: true, patient: { clinicId } },
       include: { patient: { select: { id: true, name: true, phone: true } } },
       orderBy: { patternScore: 'desc' },
     });
     res.json({ data: chronic, total: chronic.length });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    next(err);
   }
 });
 
